@@ -310,6 +310,53 @@
       transform: translateY(-1px);
       box-shadow: 0 4px 14px rgba(59,111,175,0.4);
     }
+    .btn-import {
+      background: rgba(59,111,175,0.08);
+      color: var(--blue-900);
+      border: 1px solid var(--blue-400);
+      border-radius: 10px;
+      padding: 0.7rem 1.1rem;
+      font-family: var(--font-body);
+      font-size: 0.87rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .btn-import:hover {
+      background: rgba(59,111,175,0.14);
+      transform: translateY(-1px);
+    }
+
+    .import-dropzone {
+      border: 2px dashed var(--blue-400);
+      border-radius: 14px;
+      min-height: 170px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(79,134,198,0.03);
+      border-style: dashed;
+      margin-bottom: 1rem;
+      padding: 1rem;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .import-dropzone.drag-over {
+      border-color: var(--blue-600);
+      background: rgba(59,111,175,0.08);
+    }
+    .import-help {
+      font-size: 0.92rem;
+      color: var(--blue-900);
+      line-height: 1.6;
+    }
+    .import-status {
+      min-height: 1.2rem;
+      margin-top: 0.5rem;
+      color: var(--blue-600);
+      font-size: 0.85rem;
+    }
 
     /* ── CALENDAR GRID ── */
     .calendar-grid {
@@ -644,7 +691,10 @@
         <button class="cal-nav-btn" id="next-month">&#8594;</button>
         <button class="btn-today" onclick="goToday()">Today</button>
       </div>
-      <button class="btn-add" onclick="openAddModal()">+ Add Task</button>
+      <div style="display:flex; gap:0.75rem; align-items:center;">
+        <button class="btn-import" onclick="openImportModal()">📄 Import Schedule</button>
+        <button class="btn-add" onclick="openAddModal()">+ Add Task</button>
+      </div>
     </div>
     <div class="calendar-grid" id="calendar-grid"></div>
   </main>
@@ -681,6 +731,29 @@
       <button class="btn-cancel" onclick="closeModal()">Cancel</button>
       <button class="btn-save"   onclick="saveTask()">Save Task</button>
     </div>
+  </div>
+</div>
+
+<!-- IMPORT SCHEDULE MODAL -->
+<div class="modal-overlay" id="import-modal-overlay" style="display:none" onclick="handleImportOverlayClick(event)">
+  <div class="modal" style="max-width: 520px;">
+    <button class="modal-close" onclick="closeImportModal()">✕</button>
+    <div class="modal-title">Import Schedule</div>
+
+    <div id="import-dropzone" class="import-dropzone" aria-label="Upload schedule file">
+      <div class="import-help">
+        Drag a PDF or screenshot here<br>
+        or click to choose a file<br>
+        <strong>Accepted:</strong> PDF, PNG, JPG
+      </div>
+    </div>
+
+    <input id="schedule-file-input" type="file" accept="application/pdf,image/*" hidden />
+    <div style="display:flex; justify-content:flex-end; gap:0.75rem;">
+      <button class="btn-cancel" onclick="closeImportModal()">Cancel</button>
+      <button class="btn-save" onclick="triggerScheduleFileInput()">Choose File</button>
+    </div>
+    <div id="import-status" class="import-status"></div>
   </div>
 </div>
 
@@ -886,6 +959,114 @@ function renderStats() {
     <div class="stat-card"><div class="stat-card-label">High Priority</div><div class="stat-card-value" style="color:var(--priority-high)">${high}</div></div>
   `;
 }
+
+// ── IMPORT SCHEDULE MODAL ──
+const SCHEDULE_API_URLS = [
+  'http://localhost:5001/api/imports/upload',
+  'http://localhost:5000/api/imports/upload'
+];
+
+function openImportModal() {
+  document.getElementById('import-modal-overlay').style.display = 'flex';
+  document.getElementById('import-status').textContent = '';
+}
+
+function closeImportModal() {
+  document.getElementById('import-modal-overlay').style.display = 'none';
+  document.getElementById('schedule-file-input').value = '';
+  document.getElementById('import-status').textContent = '';
+}
+
+function handleImportOverlayClick(e) {
+  if (e.target === document.getElementById('import-modal-overlay')) closeImportModal();
+}
+
+function triggerScheduleFileInput() {
+  document.getElementById('schedule-file-input').click();
+}
+
+async function uploadScheduleFromFile(file) {
+  if (!file) return;
+
+  const form = new FormData();
+  form.append('file', file);
+
+  let lastError = null;
+  for (const url of SCHEDULE_API_URLS) {
+    try {
+      const res = await fetch(url, { method: 'POST', body: form });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(payload.error || 'Upload failed');
+      }
+      return payload;
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError || new Error('Could not reach the schedule import API');
+}
+
+function mapParsedEventsToTasks(events) {
+  return (events || []).map((event, index) => ({
+    id: 'import_' + Date.now() + '_' + index,
+    title: event.title || `Imported task ${index + 1}`,
+    description: event.source_text || '',
+    date: event.date || todayStr,
+    priority: (event.type === 'test' || event.type === 'quiz') ? 'high' : (event.type === 'homework' ? 'medium' : 'low'),
+    completed: false,
+    createdAt: new Date().toISOString()
+  }));
+}
+
+async function handleImportedSchedule(file) {
+  const statusEl = document.getElementById('import-status');
+  statusEl.textContent = 'Processing schedule...';
+
+  try {
+    const payload = await uploadScheduleFromFile(file);
+    const parsed = payload.events || [];
+
+    if (!parsed.length) {
+      statusEl.textContent = 'No assignments were detected in the document.';
+      return;
+    }
+
+    const importedTasks = mapParsedEventsToTasks(parsed);
+    tasks = [...tasks, ...importedTasks];
+    saveTasks();
+    renderAll();
+
+    statusEl.textContent = `Imported ${importedTasks.length} item${importedTasks.length > 1 ? 's' : ''} into the calendar.`;
+    showToast('✅ Schedule imported');
+    setTimeout(closeImportModal, 900);
+  } catch (err) {
+    console.error(err);
+    statusEl.textContent = err.message || 'Import failed.';
+    showToast('⚠️ Import failed');
+  }
+}
+
+const importDropzone = document.getElementById('import-dropzone');
+const scheduleInput = document.getElementById('schedule-file-input');
+
+importDropzone.addEventListener('click', () => scheduleInput.click());
+importDropzone.addEventListener('dragover', e => {
+  e.preventDefault();
+  importDropzone.classList.add('drag-over');
+});
+importDropzone.addEventListener('dragleave', () => importDropzone.classList.remove('drag-over'));
+importDropzone.addEventListener('drop', e => {
+  e.preventDefault();
+  importDropzone.classList.remove('drag-over');
+  const file = e.dataTransfer.files && e.dataTransfer.files[0];
+  if (file) handleImportedSchedule(file);
+});
+
+scheduleInput.addEventListener('change', e => {
+  const file = e.target.files && e.target.files[0];
+  if (file) handleImportedSchedule(file);
+});
 
 // ── MODAL ──
 function openAddModal(dateParam) {
